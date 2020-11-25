@@ -8,4 +8,4 @@ P.G. Brodrick, D.R. Thompson, J.E. Fahlen, M.L. Eastwood, C.M. Sarture, S.R. Lun
 
 We encourage citing the above manuscript with its use.  sRTMnet is also integrated into an implementation of optimal estimation for imaging spectroscopy ([Isofit](https://github.com/isofit/isofit)). 
 
-A trained neural network for 6s -> MODTRAN translation is available at: https://zenodo.org/record/4096627#.X75-FapKiZM.
+A trained neural network for 6s -> MODTRAN translation can be found at [DOI: 10.5281/zenodo.4096627](https://doi.org/10.5281/zenodo.4096627)
