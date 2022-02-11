@@ -110,7 +110,7 @@ def main():
 
     modtran_template_file = os.path.join(template_dir,'modtran_template.json')
 
-    if args.training:
+    if args.train:
         isofit_config_file = os.path.join(template_dir,'isofit_template_v2.json')
     else:
         isofit_config_file = os.path.join(template_dir,'isofit_template_holdout.json')
@@ -150,7 +150,7 @@ def main():
     # cleanup
     if args.cleanup:
         for to_rm in ['*r_k', '*t_k', '*tp7', '*wrn', '*psc', '*plt', '*7sc', '*acd']:
-            cmd = 'find {os.path.join(paths.lut_modtran_directory)} -name "{to_rm}"')
+            cmd = 'find {os.path.join(paths.lut_modtran_directory)} -name "{to_rm}"'
             print(cmd)
             os.system(cmd)
 
