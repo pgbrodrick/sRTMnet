@@ -10,8 +10,8 @@ end
 parser = ArgumentParser(prog = "Sobol sequence template generator", description = "Generate .json files for a sobol sequence")
 add_argument!(parser, "--output_base_dir", type=String, default = "modtran_sobol_lut")
 add_argument!(parser, "--config_name", type=String, default = "data/complete_modtran_template.json")
-add_argument!(parser, "--breakout_chunk_size", type=Int64, default = -1)
 add_argument!(parser, "--total_output_samples", type=Int64, default = 20)
+add_argument!(parser, "--breakout_chunk_size", type=Int64, default = 20)
 args = parse_args(parser)
 
 base_config = JSON.parsefile(args.config_name)
@@ -59,12 +59,24 @@ for i in 1:size(final_sobol_seq)[1]
     output_config["MODTRAN"][1]["MODTRANINPUT"]["GEOMETRY"]["H1ALT"] = altitude
     output_config["MODTRAN"][1]["MODTRANINPUT"]["SURFACE"]["GNDALT"] = elevation
 
-    name = "AERFRAC_2-$(aod)_GNDALT-$(elevation)_H1ALT-$(altitude)_H2OSTR-$(wv)_senzen-$(to_sensor_zenith)_solzen-$(to_solar_zenith)_solzen-$(to_solar_azimuth)_senzen-$(to_sensor_azimuth)"
+    name = "IND_$(i)_AERFRAC_2-$(aod)_GNDALT-$(elevation)_H1ALT-$(altitude)_H2OSTR-$(wv)_senzen-$(to_sensor_zenith)_solzen-$(to_solar_zenith)_solzen-$(to_solar_azimuth)_senzen-$(to_sensor_azimuth)"
     output_config["MODTRAN"][1]["MODTRANINPUT"]["NAME"] = name
 
-    open(joinpath(args.output_base_dir, "$(name).json"), "w") do io
-        JSON.print(io, output_config, 2)
-    end;
+    if args.breakout_chunk_size == -1
+        open(joinpath(args.output_base_dir, "$(name).json"), "w") do io
+            JSON.print(io, output_config, 2)
+        end;
+    else
+        outbase = "$(args.output_base_dir)_$(Int64(floor((i-1) / args.breakout_chunk_size)))"
+
+        if isdir(outbase) == false
+            mkdir(outbase)
+        end
+
+        open(joinpath(outbase, "$(name).json"), "w") do io
+            JSON.print(io, output_config, 2)
+        end;
+    end
 
 end
 
