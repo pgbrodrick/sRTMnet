@@ -12,6 +12,7 @@ add_argument!(parser, "--output_base_dir", type=String, default = "modtran_sobol
 add_argument!(parser, "--config_name", type=String, default = "data/complete_modtran_template.json")
 add_argument!(parser, "--total_output_samples", type=Int64, default = 20)
 add_argument!(parser, "--breakout_chunk_size", type=Int64, default = 20)
+add_argument!(parser, "--log", type=Int64, default = 0)
 args = parse_args(parser)
 
 base_config = JSON.parsefile(args.config_name)
@@ -22,21 +23,29 @@ num_samples_sobol = num_samples_out * 10
 # Define sequence
 to_sensor_azimuth = 180
 sequence_names = ["solar_zenith", "to_sensor_zenith", "solar_azimuth", "altitude", "elevation", "water_vapor", "AOD"]
-sequence_upper_bounds = [cosd(0), cosd(0), cosd(0), log(99.9), log(8.85), 4.5, 1.]
-sequence_lower_bounds = [cosd(80), cosd(50), cosd(359), log(0.01), log(0.001), 0.1, 0.01]
+
+if args.log == 1
+    sequence_upper_bounds = [cosd(0), cosd(130), cosd(0), log(99.9), log(8.85), 4.5, 1.]
+    sequence_lower_bounds = [cosd(80), cosd(180), cosd(180), log(0.01), log(0.001), 0.1, 0.01]
+else
+    sequence_upper_bounds = [cosd(0), cosd(130), cosd(0), 99.9, 8.85, 4.5, 1.]
+    sequence_lower_bounds = [cosd(80), cosd(180), cosd(180), 0.01, 0.001, 0.1, 0.01]
+end
 ss = SobolSeq(sequence_lower_bounds, sequence_upper_bounds)
 
 # Populate sequence
 base_sobol_sequence = zeros(num_samples_sobol, length(sequence_lower_bounds))
-for i ∈ 1:size(base_sobol_sequence)[1]
+for i in 1:size(base_sobol_sequence)[1]
     next!(ss, @view base_sobol_sequence[i,:])
 end
 
 # Trim out non-physical components (e.g., elevation > observation altitude)
-final_sobol_seq = @views base_sobol_sequence[base_sobol_sequence[:,index(sequence_names, "elevation")] .> base_sobol_sequence[:,index(sequence_names, "altitude")], :][1:num_samples_out, :]
+final_sobol_seq = @views base_sobol_sequence[base_sobol_sequence[:,index(sequence_names, "elevation")] .< base_sobol_sequence[:,index(sequence_names, "altitude")], :][1:num_samples_out, :]
 final_sobol_seq[:,1:3] = acosd.(final_sobol_seq[:,1:3])
-final_sobol_seq[:,4:5] = exp.(final_sobol_seq[:,4:5])
 
+if args.log == 1
+    final_sobol_seq[:,4:5] = exp.(final_sobol_seq[:,4:5])
+end
 
 for i in 1:size(final_sobol_seq)[1]
     output_config = copy(base_config)
