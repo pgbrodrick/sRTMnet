@@ -35,7 +35,6 @@ def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description="built luts for emulation.")
     parser.add_argument('-ip_head', type=str)
-    parser.add_argument('-redis_password', type=str)
     parser.add_argument('-n_cores', type=int, default=1)
     parser.add_argument('-train', type=int, default=1, choices=[0,1])
     parser.add_argument('-cleanup', type=int, default=0, choices=[0,1])
@@ -48,15 +47,16 @@ def main():
     dayofyear = 200
 
     if args.train:
-        to_solar_zenith_lut = [0, 12.5, 25, 37.5, 50]
+        to_solar_zenith_lut = [0, 12.5, 25, 37.5, 50, 60]
         to_solar_azimuth_lut = [180]
         to_sensor_azimuth_lut = [180]
         to_sensor_zenith_lut = [140, 160, 180]
-        altitude_km_lut = [2, 4, 7, 10, 15, 25]
-        elevation_km_lut = [0, 0.75, 1.5, 2.25, 4.5]
-        h2o_lut_grid = np.round(np.linspace(0.1,5,num=5),3).tolist() + [0.6125]
+        altitude_km_lut = [2, 4, 7, 10, 15, 25, 99]
+        #altitude_km_lut = [99]
+        elevation_km_lut = [0, 0.75, 1.5, 2.25, 4.5, 7.5]
+        h2o_lut_grid = np.round(np.linspace(0.05,7,num=7),3).tolist() + [0.6]
         h2o_lut_grid.sort()
-        aerfrac_2_lut_grid = np.round(np.linspace(0.01,1,num=5),3).tolist() + [0.5]
+        aerfrac_2_lut_grid = np.round(np.linspace(0.01,1,num=7),3).tolist()
         aerfrac_2_lut_grid.sort()
 
     else:
@@ -96,7 +96,6 @@ def main():
 
     # Initialize ray for parallel execution
     rayargs = {'address': args.ip_head,
-               'redis_password': args.redis_password,
                'local_mode': args.n_cores == 1}
 
     if args.n_cores < 40:
@@ -131,7 +130,7 @@ def main():
     with open(modtran_template_file, 'w') as fout:
         fout.write(json.dumps(modtran_config, cls=SerialEncoder, indent=4, sort_keys=True))
 
-    paths = Paths(os.path.join('.',os.path.basename(modtran_template_file)), args.training)
+    paths = Paths(os.path.join('.',os.path.basename(modtran_template_file)), args.train)
 
 
     build_main_config(paths, isofit_config_file, to_solar_azimuth_lut, to_solar_zenith_lut, 
@@ -141,8 +140,8 @@ def main():
     config = configs.create_new_config(isofit_config_file)
 
 
-    isofit_modtran = ModtranRT(config.forward_model.radiative_transfer.radiative_transfer_engines[0],
-                               config)
+    #isofit_modtran = ModtranRT(config.forward_model.radiative_transfer.radiative_transfer_engines[0],
+    #                           config)
 
     isofit_sixs = SixSRT(config.forward_model.radiative_transfer.radiative_transfer_engines[1],
                          config)
@@ -170,9 +169,9 @@ class Paths():
         self.earth_sun_distance_file = '../support/earth_sun_distance.txt'
         self.irradiance_file = '../support/prism_optimized_irr.dat'
 
-        if args.training:
-            self.lut_modtran_directory = '../modtran_lut'
-            self.lut_sixs_directory = '../sixs_lut'
+        if training:
+            self.lut_modtran_directory = '../emit_rg_modtran_lut'
+            self.lut_sixs_directory = '../emit_rg_sixs_lut'
         else:
             self.lut_modtran_directory = '../modtran_lut_holdout_az'
             self.lut_sixs_directory = '../sixs_lut_holdout_az'

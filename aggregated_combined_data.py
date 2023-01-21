@@ -176,7 +176,7 @@ def read_data_piece(ind, maxind, point, fn, key, resample, obj):
 def get_obj_res(obj, key, resample=True):
 
     # We don't want the VectorInterpolator, but rather the raw inputs
-    ray.init(temp_dir='/tmp/ray/brodrick/')
+    ray.init()
     if hasattr(obj,'sixs_ngrid_init'):
         results = np.zeros((obj.points.shape[0],obj.sixs_ngrid_init), dtype=float)
     else:
