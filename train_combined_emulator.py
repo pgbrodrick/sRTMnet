@@ -6,8 +6,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import os
-from isofit.radiative_transfer.modtran import ModtranRT
-from isofit.radiative_transfer.six_s import SixSRT
+#from isofit.radiative_transfer.modtran import ModtranRT
+#from isofit.radiative_transfer.six_s import SixSRT
 from isofit.configs import configs
 import argparse
 from sklearn import linear_model
@@ -22,25 +22,79 @@ from isofit.core.common import resample_spectrum
 from scipy import interpolate
 import pickle
 
+#os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+
+def rho_to_rdn(rho,solar_irr,coszen):
+    return rho / np.pi * solar_irr[np.newaxis,:] * coszen
+
 
 
 def beckman_rdn(simulated_modtran, wl, n_bands=424):
 
-    refl_file = "../isofit/examples/20171108_Pasadena/insitu/BeckmanLawn.txt"
-    solar_irr = np.load('../isofit/examples/20171108_Pasadena/solar_irr.npy')[:-1]
+
+    refl_file = "/store/brodrick/repos/isofit-tutorials/20171108_Pasadena/insitu/BeckmanLawn.txt"
+    solar_irr = np.genfromtxt('/store/brodrick/repos/isofit-data/kurudz_0.1nm.dat')[:-1]
+
+
     coszen = 0.6155647578988601
     rfl = np.genfromtxt(refl_file)
-    rfl = resample_spectrum(rfl[:,1],rfl[:,0],wl,rfl[:,2]*1000)
+    fwhm = rfl[:,2]*1000
+    print(fwhm[0])
+    rfl = resample_spectrum(rfl[:,1],rfl[:,0],wl,fwhm)
 
-    rho = simulated_modtran[:,n_bands:2*n_bands]
-    rdn_atm = rho / np.pi*(solar_irr * coszen)
+    irr = np.loadtxt('/store/brodrick/repos/isofit-data/kurudz_0.1nm.dat', comments="#")
+    iwl, irr = irr.T
+    irr = irr / 10.0  # convert, uW/nm/cm2
+    #irr = irr / self.irr_factor**2  # consider solar distance
+    solar_irr = resample_spectrum(irr, iwl, wl, fwhm)
 
-    transm = simulated_modtran[:,:n_bands]
-    rdn_down = (solar_irr * coszen) / np.pi * transm
+    n_bands = len(wl)
 
-    sphalb = simulated_modtran[:,n_bands*2:n_bands*3]
+    #keys=['rhoatm','sphalb','transm_down_dir','transm_down_dif', 'transm_up_dir','transm_up_dif'] 
+    rho = simulated_modtran[:,:n_bands]
+    sphalb = simulated_modtran[:,n_bands*1:n_bands*2]
+    transm_down_dir = simulated_modtran[:,n_bands*2:n_bands*3]
+    transm_down_dif = simulated_modtran[:,n_bands*3:n_bands*4]
+    transm_up_dir = simulated_modtran[:,n_bands*4:n_bands*5]
+    transm_up_dif = simulated_modtran[:,n_bands*5:n_bands*6]
 
-    rdn = rdn_atm + rdn_down * rfl / (1.0 - sphalb * rfl)
+
+    # bi-directional            (downward direct * upward direct)
+    # hemispherical-directional (downward diffuse * upward direct)
+    # directional-hemispherical (downward direct * upward diffuse)
+    # bi-hemispherical          (downward diffuse * upward diffuse)
+    ## at-sensor radiance model, including topography, adjacency effects, and glint
+    #ret = (
+    #    L_atm
+    #    + (
+    #        L_bi_direct * rfl_dir  # bi-directional radiance
+    #        + L_hemi_direct * rfl_dif  # hemispherical-directional radiance
+    #        + L_direct_hemi * bg_dir  # directional-hemispherical radiance
+    #        + L_bi_hemi * bg_dif  # bi-hemispherical radiance
+    #    )
+    #    / (1.0 - s_alb * bg_dif)
+    #    + L_up
+    #)
+
+
+    L_bi_direct = rho_to_rdn(transm_down_dir * transm_up_dir, solar_irr, coszen)
+    L_hemi_direct = rho_to_rdn(transm_down_dif * transm_up_dir, solar_irr, coszen)
+    L_direct_hemi = rho_to_rdn(transm_down_dir * transm_up_dif, solar_irr, coszen)
+    L_bi_hemi = rho_to_rdn(transm_down_dif * transm_up_dif, solar_irr, coszen)
+    L_atm = rho_to_rdn(rho, solar_irr, coszen)
+
+    rdn =  L_atm +\
+        (+\
+        L_bi_direct * rfl +\
+        L_hemi_direct * rfl +\
+        L_direct_hemi * rfl +\
+        L_bi_hemi * rfl\
+        ) / (1.0 - sphalb * rfl)
+
+
+    rdn_atm = rho_to_rdn(rho, solar_irr, coszen)
+
 
     return rdn, rdn_atm
     
@@ -60,11 +114,41 @@ def nn_model(in_data_shape, out_data_shape, num_layers=5):
     output_layer = keras.layers.Dense(units=out_data_shape[-1], activation='linear')(output_layer)
     model = keras.models.Model(inputs=[inlayer], outputs=[output_layer])
     optimizer=keras.optimizers.Adam(learning_rate=0.0001)
+    #optimizer=keras.optimizers.Adam()
     model.compile(loss='mse', optimizer=optimizer)
 
     return model
 
 
+
+def nn_model_ind(in_data_shape, out_data_shape, num_keys, num_layers=1):
+
+    layer_depths = np.linspace(int(in_data_shape[-1]/num_keys),int(out_data_shape[-1]/num_keys),num=num_layers+1,dtype=int)
+
+    inlayer = keras.layers.Input(shape=(in_data_shape[-1],))
+    
+    instack = []
+    outstack = []
+    input_width = int(in_data_shape[-1]/num_keys)
+    for nk in range(num_keys):
+        #output_layer = keras.layers.Cropping1D(cropping=(0,(num_keys-1)*(in_data_shape[-1]/num_keys)))(inlayer)
+        output_layer = inlayer[:, nk*input_width:(nk+1)*input_width]
+
+        for _l in range(num_layers):
+            output_layer = keras.layers.Dense(units=layer_depths[_l])(output_layer)
+            output_layer = keras.layers.LeakyReLU(alpha=0.4)(output_layer)
+
+        output_layer = keras.layers.Dense(units=int(out_data_shape[-1]/num_keys), activation='linear')(output_layer)
+        outstack.append(output_layer)
+
+    output_merge = keras.layers.Concatenate()(outstack)
+
+    model = keras.models.Model(inputs=[inlayer], outputs=[output_merge])
+    optimizer=keras.optimizers.Adam(learning_rate=0.001)
+    #optimizer=keras.optimizers.Adam()
+    model.compile(loss='mse', optimizer=optimizer)
+
+    return model
 
 class SplitModel():
 
@@ -117,11 +201,22 @@ def main():
 
     np.random.seed(13)
 
+    #es = keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=20, restore_best_weights=True)
+    #train_sixs = np.ones((13905,5166))
+    #train_modtran = np.ones((13905, 129006))
+    #keys = np.ones(6)
+    #model = nn_model_ind(train_sixs.shape, train_modtran.shape, len(keys))
+    #print(model.summary())
+    #model.fit(train_sixs, train_modtran, batch_size=10, epochs=400,
+    #          validation_data=(train_sixs, train_modtran),callbacks=[es])
+    #exit()
 
-    npzf = np.load(args.munged_file)
 
-    modtran_results = npzf['modtran_results']
+
+    npzf = np.load(args.munged_file, allow_pickle=True)
+
     sixs_results = npzf['sixs_results']
+    modtran_results = npzf['modtran_results']
     points = npzf['points']
     keys = npzf['keys']
     point_names = npzf['point_names']
@@ -133,6 +228,37 @@ def main():
     print(point_names)
     n_bands_modtran = int(modtran_results.shape[-1]/len(keys))
     n_bands_sixs = int(sixs_results.shape[-1]/len(keys))
+
+    modtran_results[np.isnan(modtran_results)] = 0
+    sixs_results[np.isnan(sixs_results)] = 0
+    modtran_results[np.isfinite(modtran_results) == False] = 0
+    sixs_results[np.isfinite(sixs_results) == False] = 0
+
+    max_wl = np.min([np.max(simulator_wavelengths),np.max(emulator_wavelengths)])
+    min_wl = np.max([np.min(simulator_wavelengths),np.min(emulator_wavelengths)])
+    emulator_idx = np.where(np.logical_and(emulator_wavelengths >= min_wl, emulator_wavelengths <= max_wl))[0]
+
+    modtran_results_clipped = np.zeros((modtran_results.shape[0], len(emulator_idx)*len(keys)))
+    for n in range(len(keys)):
+        modtran_results_clipped[:,n*len(emulator_idx):(n+1)*len(emulator_idx)] = modtran_results[:, emulator_idx + n_bands_modtran*n]
+
+    print(modtran_results.shape)
+    modtran_results = modtran_results_clipped
+    del modtran_results_clipped
+    n_bands_modtran = int(modtran_results.shape[-1]/len(keys))
+    emulator_wavelengths = emulator_wavelengths[emulator_idx]
+
+    print(modtran_results.shape)
+
+    #fig = plt.figure(figsize=(20,5))
+    #gs = gridspec.GridSpec(ncols=1, nrows=2, wspace=0.3, hspace=0.4)
+    #ax = fig.add_subplot(gs[0, 0])
+    #plt.plot(np.mean(modtran_results,axis=0))
+    #ax = fig.add_subplot(gs[1, 0])
+    #plt.plot(np.mean(sixs_results,axis=0))
+    #plt.savefig('figs/h2o_comp/inputs.png',dpi=200,bbox_inches='tight')
+    #exit()
+
 
 
     if args.holdout_dim == -1:
@@ -174,6 +300,8 @@ def main():
 
 
     train_modtran = modtran_results-sixs_results_match_modtran
+    train_modtran[np.isfinite(train_modtran) == False] = 0
+    train_sixs[np.isfinite(train_sixs) == False] = 0
 
     print(train_modtran.shape)
     base_save_name = os.path.join(args.save_dir,'emulator')
@@ -187,10 +315,14 @@ def main():
     monitor='val_loss'
         
     es = keras.callbacks.EarlyStopping(monitor=monitor, mode='min', verbose=1, patience=20, restore_best_weights=True)
-    model = nn_model(train_sixs.shape, modtran_results.shape)
+    #model = nn_model_ind(train_sixs.shape, train_modtran.shape, len(keys))
+    model = nn_model(train_sixs.shape, train_modtran.shape)
+    print(model.summary())
+
 
     simple_response_scaler = np.ones(train_modtran.shape[1])*100
     train_modtran *= simple_response_scaler
+    #import ipdb; ipdb.set_trace()
     model.fit(train_sixs[train,:], train_modtran[train,:], batch_size=1000, epochs=400,
               validation_data=(train_sixs[test,:], train_modtran[test,:]),callbacks=[es])
     train_modtran /= simple_response_scaler
@@ -200,13 +332,11 @@ def main():
    
     pred = full_pred[test, :]
 
-    model.save(base_save_name)
+    model.save(base_save_name + '.h5')
     np.savez(base_save_name + '_aux.npz', lut_names=point_names, 
              rt_quantities=keys, 
-             feature_scaler_mean=feature_scaler.mean_,response_scaler_mean=response_scaler.mean_,
-             feature_scaler_var=feature_scaler.var_,response_scaler_var=response_scaler.var_,
-             feature_scaler_scale=feature_scaler.scale_,response_scaler_scale=response_scaler.scale_,
-             solar_irr=solar_irr, emulator_wavelengths=emulator_wavelengths,
+             solar_irr=solar_irr, 
+             emulator_wavelengths=emulator_wavelengths,
              response_scaler=simple_response_scaler,
              simulator_wavelengths=simulator_wavelengths)
 
@@ -221,16 +351,27 @@ def main():
 
     
 
-    fig = plt.figure(figsize=(10, 10 * 2 / (0.5 + 2)))
+    fig = plt.figure(figsize=(20, 20 * 2 / (0.5 + 2)))
     gs = gridspec.GridSpec(ncols=len(keys), nrows=2, wspace=0.3, hspace=0.4)
 
-    ref_rdn = np.genfromtxt('../isofit/examples/20171108_Pasadena/remote/ang20171108t184227_rdn_v2p11_BeckmanLawn_424.txt')[:,1]
+    ref_rdn = np.genfromtxt('/store/brodrick/repos/isofit-tutorials/20171108_Pasadena/remote/ang20171108t184227_rdn_v2p11_BeckmanLawn.txt')
     rdn_modtran, rdn_modtran_atm = beckman_rdn(modtran_results,emulator_wavelengths)
+
+    ref_rdn = resample_spectrum(ref_rdn[:,1],ref_rdn[:,0],emulator_wavelengths, np.ones(len(emulator_wavelengths))*7.5)
 
 
 
     cf = 100
-    varset = np.where(np.logical_and.reduce((points[:,3] == 2.55, points[:,-1] == 0, points[:,-2] == 180, points[:,1] == 0, points[:,2] == 4, points[:,0] == 0.01)))[0]
+
+    varset = np.where(np.logical_and.reduce((points[:,0]  == np.median(points[:,0]),  
+                                             points[:,1] == np.median(points[:,1]), 
+                                             points[:,2] == np.median(points[:,2]), 
+                                             points[:,3] == np.median(points[:,3]), 
+                                             points[:,4] == np.median(points[:,4]), 
+                                             points[:,5] == np.median(points[:,5]), 
+                                             points[:,6] == np.median(points[:,6]), 
+                                             )))[0]
+
     best_modtran = np.argmin(np.sum(np.power(rdn_modtran[:,:cf] - ref_rdn[:cf],2),axis=1))
     best_emu = np.argmin(np.sum(np.power(rdn[:,:cf] - ref_rdn[:cf],2),axis=1))
     plt.plot(emulator_wavelengths, ref_rdn, c='black', linewidth=0.8)
@@ -252,7 +393,7 @@ def main():
     plt.text(1000, 10 , pointstr_modtran, verticalalignment='top')
     plt.text(2000, 10 , pointstr_emu, verticalalignment='top')
 
-    plt.savefig('rdn_plots/best_matches.png',dpi=200,bbox_inches='tight')
+    plt.savefig(os.path.join(args.fig_dir, 'rdn_plots_best_matches.png'),dpi=200,bbox_inches='tight')
 
 
 
@@ -278,7 +419,7 @@ def main():
         pointstr = '{}: {} - {}'.format(point_names[dim], un_vals[0],un_vals[-1])
         plt.text(2000, 8 , pointstr, verticalalignment='top')
 
-        plt.savefig('{}/dim_{}.png'.format('rdn_plots', dim), dpi=200, bbox_inches='tight')
+        plt.savefig('{}/dim_{}.png'.format(args.fig_dir, dim), dpi=200, bbox_inches='tight')
         plt.clf()
 
 
@@ -302,15 +443,18 @@ def main():
         pointstr = '{}: {} - {}'.format(point_names[dim], un_vals[0],un_vals[-1])
         plt.text(2000, 8 , pointstr, verticalalignment='top')
 
-        plt.savefig('{}/modtran_dim_{}.png'.format('rdn_plots', dim), dpi=200, bbox_inches='tight')
+        plt.savefig('{}/modtran_dim_{}.png'.format(args.fig_dir, dim), dpi=200, bbox_inches='tight')
         plt.clf()
 
 
-    fig = plt.figure(figsize=(10, 10 * 3 / (0.5 + 3)))
+
+    #print_keys = ['Total\nTransmittance', 'Atmospheric Path\nReflectance', 'Spherical Albedo']
+    print_keys=['rhoatm','sphalb','transm_down_dir','transm_down_dif', 'transm_up_dir','transm_up_dif'] 
+    n_bands = int(modtran_results.shape[-1]/len(keys))
+
+    fig = plt.figure(figsize=(20, 20 * 2 / (0.5 + len(print_keys))))
     gs = gridspec.GridSpec(ncols=len(keys), nrows=3, wspace=0.3, hspace=0.4)
 
-    print_keys = ['Total\nTransmittance', 'Atmospheric Path\nReflectance', 'Spherical Albedo']
-    n_bands = int(modtran_results.shape[-1]/len(keys))
     for key_ind, key in enumerate(keys):
 
         ax = fig.add_subplot(gs[0, key_ind])
@@ -385,7 +529,8 @@ def main():
     plt.savefig('{}/mean_test_set.png'.format(args.fig_dir), bbox_inches='tight')
     plt.clf()
 
-    fig = plt.figure(figsize=(10, 10 * 2 / (0.5 + 2)))
+    #fig = plt.figure(figsize=(10, 10 * 2 / (0.5 + 2)))
+    fig = plt.figure(figsize=(20, 20 * 2 / (0.5 + len(print_keys))))
     gs = gridspec.GridSpec(ncols=len(keys), nrows=2, wspace=0.3, hspace=0.4)
 
     error_mean = np.zeros(len(test))
@@ -397,8 +542,8 @@ def main():
     order = np.argsort(error_mean)
     #order = np.argsort(points[test,0])
 
-    lims_main = [[0, 1], [0, 0.25], [0, 0.35],[0,1]]
-    lims_diff = [[0, 0.25], [0, 0.1], [0, 0.1],[0,1]]
+    lims_main = [[0, 1], [0, 1], [0, 1], [0, 1], [0, 1], [0, 1]]
+    lims_diff = [[0, 0.25], [0, 0.25], [0, 0.25], [0, 0.25], [0, 0.25], [0, 0.25]]
 
     #for row in range(np.sum(test)):
     for row_ind, row in enumerate(order[np.linspace(0,len(order)-1,20,dtype=int)].tolist()):
